@@ -47,6 +47,7 @@ const colunasHome = [
   'coordenador_geral',
   'coordenador_campo',
   'outorga',
+  'prazo',
   'validade',
   'tipo',
   'status_portaria'
@@ -226,9 +227,9 @@ export default function ConsultaPortarias() {
   const [carregando, setCarregando] = useState(true)
   const [dataAtualizacao, setDataAtualizacao] = useState<string>('')
   
-  // Estados: Paginação - 100 REGISTROS POR PÁGINA
+  // Estados: Paginação - 50 REGISTROS POR PÁGINA
   const [paginaAtual, setPaginaAtual] = useState(1)
-  const [itensPorPagina] = useState(100)
+  const [itensPorPagina] = useState(50)
   const [totalPaginas, setTotalPaginas] = useState(1)
   const [totalRegistros, setTotalRegistros] = useState(0)
 
@@ -296,7 +297,7 @@ export default function ConsultaPortarias() {
     buscarDados()
   }, [])
 
-  // Efeito para exibição automática inicial - 100 registros mais recentes
+  // Efeito para exibição automática inicial - 50 registros mais recentes
   useEffect(() => {
     if (portarias.length === 0) return
 
@@ -307,7 +308,7 @@ export default function ConsultaPortarias() {
         }
         return (b.portaria || '').localeCompare(a.portaria || '')
       })
-      .slice(0, 100)
+      .slice(0, 50)
 
     setDadosFiltrados(registrosRecentes)
     setDadosExibicao(registrosRecentes)
@@ -693,10 +694,38 @@ export default function ConsultaPortarias() {
             Consulta de Autorizações de Pesquisas Arqueológicas
           </h1>
           <p className="text-gray-900">
-            Dados extraídos do Banco de Portarias mantido e atualizado pelo CNA/IPHAN
+            Dados extraídos do Banco de Portarias mantido e atualizado pelo{' '}
+            <a 
+              href="https://www.gov.br/iphan/pt-br/patrimonio-cultural/patrimonio-arqueologico/autorizacoes-de-pesquisas-arqueologicas" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 underline"
+              >
+              CNA/IPHAN
+            </a>
+            {' '} - {' '}
+            <a 
+              href="https://docs.google.com/spreadsheets/d/1R5svYhxvBHNOW35NEy23oE8VXX1eWq5v/edit?gid=246705190#gid=246705190" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 underline"
+              >
+              Ver repositório de dados
+            </a>
           </p>
           <p className="text-gray-800">
             Informações consultáveis até a Portaria nº 104/2025 - Publicada no DOU em 12/11/2025
+          </p>
+          <p className="text-gray-800">
+            Para consultar dados de portarias pós 12/11/2025 - {' '}
+              <a 
+              href="https://consulta-portarias.vercel.app/" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 underline"
+              >
+              Ver extração DOU
+            </a>
           </p>
           <p className="text-gray-600">
             Busque e filtre as informações de acordo com suas necessidades
