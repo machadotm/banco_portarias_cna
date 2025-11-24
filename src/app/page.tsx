@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 // Configuração do Supabase
@@ -77,7 +77,6 @@ const colunasBusca = [
 // Função para remover acentos e caracteres especiais
 const normalizarTexto = (texto: string): string => {
   if (!texto) return ''
-  
   return texto
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -87,56 +86,43 @@ const normalizarTexto = (texto: string): string => {
 
 // Função para calcular status
 const calcularStatus = (portaria: any) => {
-  // Verificar se é Revogada
   if (portaria.tipo && normalizarTexto(portaria.tipo).includes('revogacao')) {
     return 'Revogada'
   }
-
-  // Lógica para Vigente/Expirada com base na validade
   const validade = portaria.validade
   if (!validade || validade.trim() === '') return 'Data não informada'
-  
   const regexData = /^(\d{2})\/(\d{2})\/(\d{4})$/
   const match = validade.match(regexData)
-  
   if (!match) return 'Formato inválido'
-  
   const dia = parseInt(match[1])
   const mes = parseInt(match[2]) - 1
   const ano = parseInt(match[3])
   const dataValidade = new Date(ano, mes, dia)
-  
   const hoje = new Date()
   hoje.setHours(0, 0, 0, 0)
-  
   return dataValidade > hoje ? 'Vigente' : 'Expirada'
 }
 
-// 🔒 FUNÇÃO SEGURA: Exportar para CSV
+// 🔒 Exportar para CSV
 const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColunas: any[], nomeArquivo: string = `portarias_cna_${new Date().toISOString().split('T')[0]}.csv`) => {
   if (dados.length === 0) {
     alert('Não há dados para exportar.')
     return
   }
-
   const colunasOrdenadas: string[] = [];
-  
   if (colunasSelecionadas.includes('status_portaria')) {
     colunasOrdenadas.push('status_portaria');
   }
-  
   todasColunas.forEach(coluna => {
     if (colunasSelecionadas.includes(coluna.id) && coluna.id !== 'status_portaria') {
       colunasOrdenadas.push(coluna.id);
     }
   });
-
   const headers = colunasOrdenadas.map(colunaId => {
     if (colunaId === 'status_portaria') return 'Status'
     const coluna = todasColunas.find(c => c.id === colunaId)
     return coluna ? coluna.nome : colunaId
   })
-
   const linhas = dados.map(portaria => {
     return colunasOrdenadas.map(colunaId => {
       if (colunaId === 'status_portaria') {
@@ -145,9 +131,7 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
       return `"${(portaria[colunaId] || 'N/A').toString().replace(/"/g, '""')}"`
     }).join(',')
   })
-
   const csvContent = [headers.join(','), ...linhas].join('\n')
-  
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
   const link = document.createElement('a')
   const url = URL.createObjectURL(blob)
@@ -159,42 +143,89 @@ const exportarParaCSV = (dados: any[], colunasSelecionadas: string[], todasColun
   document.body.removeChild(link)
 }
 
-// Função para buscar todos os dados paginados do Supabase
+// Paginação estável: use a chave primária da tabela (ajuste se não for 'id')
+const PRIMARY_KEY = 'id'
+
+// Buscar todos os dados com paginação estável (sem pular registros)
 const buscarTodosDados = async (): Promise<any[]> => {
-  let todosDados: any[] = []
-  let start = 0
   const chunkSize = 1000
-  let hasMore = true
+  let start = 0
+  let todos: any[] = []
+  let total: number | null = null
 
   try {
-    while (hasMore) {
-      const { data, error } = await supabase
+    while (true) {
+      const { data, count, error } = await supabase
         .from('banco_portarias_cna')
-        .select('*')
+        .select('*', { count: 'exact' })
+        .order(PRIMARY_KEY, { ascending: true })
         .range(start, start + chunkSize - 1)
-        .order('ano', { ascending: false })
 
       if (error) {
         console.error('Erro ao buscar dados:', error)
         break
       }
 
-      if (data && data.length > 0) {
-        todosDados = [...todosDados, ...data]
-        start += chunkSize
-        
-        if (data.length < chunkSize) {
-          hasMore = false
-        }
-      } else {
-        hasMore = false
-      }
+      if (total == null) total = count ?? null
+
+      if (!data || data.length === 0) break
+
+      todos = todos.concat(data)
+      start += chunkSize
+
+      if (total != null && todos.length >= total) break
+      if (data.length < chunkSize) break
     }
-    
-    console.log(`Total de registros carregados: ${todosDados.length}`)
-    return todosDados
+
+    console.log(`Total de registros carregados: ${todos.length}`)
+    return todos
   } catch (err) {
     console.error('Erro na busca paginada:', err)
+    return []
+  }
+}
+
+// Busca no servidor por termo, cobrindo todas as colunas relevantes, com paginação estável
+const buscarPorTermoNoServidor = async (termo: string): Promise<any[]> => {
+  const chunkSize = 1000
+  let start = 0
+  let todos: any[] = []
+  let total: number | null = null
+
+  const pattern = `%${termo}%`
+  // Monta expressão OR com ILIKE para todas as colunas de colunasBusca
+  const orExpr = colunasBusca
+    .map((col) => `${col}.ilike.${pattern}`)
+    .join(',')
+
+  try {
+    while (true) {
+      const { data, count, error } = await supabase
+        .from('banco_portarias_cna')
+        .select('*', { count: 'exact' })
+        .or(orExpr)
+        .order(PRIMARY_KEY, { ascending: true })
+        .range(start, start + chunkSize - 1)
+
+      if (error) {
+        console.error('Erro ao buscar por termo:', error)
+        break
+      }
+
+      if (total == null) total = count ?? null
+
+      if (!data || data.length === 0) break
+
+      todos = todos.concat(data)
+      start += chunkSize
+
+      if (total != null && todos.length >= total) break
+      if (data.length < chunkSize) break
+    }
+
+    return todos
+  } catch (err) {
+    console.error('Erro na busca por termo:', err)
     return []
   }
 }
@@ -206,10 +237,9 @@ export default function ConsultaPortarias() {
   const [dadosExibicao, setDadosExibicao] = useState<any[]>([])
   const [termoBuscaInput, setTermoBuscaInput] = useState('')
   const [buscaAplicada, setBuscaAplicada] = useState('')
-  const [colunasSelecionadas, setColunasSelecionadas] = useState(colunasHome) // AGORA colunasHome ESTÁ DEFINIDA
+  const [colunasSelecionadas, setColunasSelecionadas] = useState(colunasHome)
   const [carregando, setCarregando] = useState(true)
   const [dataAtualizacao, setDataAtualizacao] = useState<string>('')
-  
   const [paginaAtual, setPaginaAtual] = useState(1)
   const [itensPorPagina] = useState(100)
   const [totalPaginas, setTotalPaginas] = useState(1)
@@ -222,30 +252,26 @@ export default function ConsultaPortarias() {
   const [filtroStatus, setFiltroStatus] = useState<string>('')
 
   const [isClient, setIsClient] = useState(false)
+  const [resultadosBuscaServidor, setResultadosBuscaServidor] = useState<any[] | null>(null)
+  const [carregandoBusca, setCarregandoBusca] = useState(false)
 
   const bodyRef = useRef<HTMLDivElement>(null)
 
-  // Efeito para marcar que estamos no client
   useEffect(() => {
     setIsClient(true)
   }, [])
 
-  // Buscar dados do Supabase com paginação
+  // Carregar todos os dados com paginação estável
   useEffect(() => {
     const buscarDados = async () => {
       try {
         setCarregando(true)
-        console.log('Iniciando carregamento de dados...')
-        
         const todosDados = await buscarTodosDados()
-        
-        console.log('Dados carregados:', todosDados.length)
-        
         setPortarias(todosDados)
         setTodosRegistros(todosDados)
         setTotalRegistros(todosDados.length)
-        
-        // Buscar a última data de atualização
+
+        // Última atualização
         const { data: dataAtualizacao, error: errorAtualizacao } = await supabase
           .from('banco_portarias_cna')
           .select('updated_at')
@@ -264,22 +290,18 @@ export default function ConsultaPortarias() {
         console.error('Erro ao carregar dados:', err)
       } finally {
         setCarregando(false)
-        console.log('Carregamento finalizado')
       }
     }
-
     buscarDados()
   }, [])
 
-  // Efeito para exibição automática inicial - 100 registros mais recentes
+  // Exibição inicial
   useEffect(() => {
     if (portarias.length === 0) return
-
     const registrosRecentes = portarias
+      .slice() // evita sort in-place
       .sort((a, b) => {
-        if (a.ano !== b.ano) {
-          return b.ano - a.ano
-        }
+        if (a.ano !== b.ano) return b.ano - a.ano
         return (b.portaria || '').localeCompare(a.portaria || '')
       })
       .slice(0, 100)
@@ -290,49 +312,35 @@ export default function ConsultaPortarias() {
     setTotalPaginas(Math.ceil(portarias.length / itensPorPagina))
   }, [portarias, itensPorPagina])
 
-  // Função para aplicar busca nos dados - OTIMIZADA
-  const aplicarBusca = useCallback((dados: any[], termoBusca: string) => {
-    if (!termoBusca.trim()) return dados
-
-    const termoNormalizado = normalizarTexto(termoBusca)
-    
-    return dados.filter(portaria => {
-      // Verificar primeiro nos campos mais comuns de busca para melhor performance
-      const camposPrioritarios = [
-        portaria.portaria,
-        portaria.processo,
-        portaria.empreendedor,
-        portaria.empreendimento,
-        portaria.projeto,
-        portaria.coordenador_geral,
-        portaria.coordenador_campo,
-        portaria.municipios
-      ].join(' ').toLowerCase()
-
-      const camposPrioritariosNormalizados = normalizarTexto(camposPrioritarios)
-      
-      // Se encontrou nos campos prioritários, retorna true sem verificar os outros campos
-      if (camposPrioritariosNormalizados.includes(termoNormalizado)) {
-        return true
+  // Busca no servidor quando o termo é aplicado
+  useEffect(() => {
+    const executarBuscaServidor = async () => {
+      if (!buscaAplicada.trim()) {
+        setResultadosBuscaServidor(null)
+        return
       }
+      try {
+        setCarregandoBusca(true)
+        const resultados = await buscarPorTermoNoServidor(buscaAplicada.trim())
+        setResultadosBuscaServidor(resultados)
+      } catch (err) {
+        console.error('Erro na busca servidor:', err)
+        setResultadosBuscaServidor([])
+      } finally {
+        setCarregandoBusca(false)
+      }
+    }
+    executarBuscaServidor()
+  }, [buscaAplicada])
 
-      // Se não encontrou, verifica todos os campos (mais lento)
-      const textoCompleto = colunasBusca
-        .map(coluna => portaria[coluna] || '')
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
+  // Aplicar filtros sobre a base atual (resultados da busca servidor ou todos registros)
+  const obterDadosBaseParaFiltros = useCallback(() => {
+    return resultadosBuscaServidor ?? todosRegistros
+  }, [resultadosBuscaServidor, todosRegistros])
 
-      const textoNormalizado = normalizarTexto(textoCompleto)
-      return textoNormalizado.includes(termoNormalizado)
-    })
-  }, [])
-
-  // Função para obter dados filtrados com base nos filtros atuais
   const obterDadosFiltrados = useCallback((dados: any[]) => {
     let resultados = dados
 
-    // Aplicar filtros - INCLUINDO VERIFICAÇÃO PARA DADOS NULL/VAZIOS
     if (filtroAno) {
       resultados = resultados.filter(portaria => 
         portaria.ano?.toString() === filtroAno || 
@@ -344,8 +352,6 @@ export default function ConsultaPortarias() {
         const valorUnidade = portaria.unidade || ''
         const valorNormalizado = normalizarTexto(valorUnidade)
         const filtroNormalizado = normalizarTexto(filtroUnidade)
-        
-        // Se filtro for "NULL", buscar registros com unidade nula ou vazia
         if (filtroUnidade === 'NULL') {
           return !portaria.unidade || portaria.unidade.trim() === ''
         }
@@ -357,7 +363,6 @@ export default function ConsultaPortarias() {
         const valorTipo = portaria.tipo_empreendimento || ''
         const valorNormalizado = normalizarTexto(valorTipo)
         const filtroNormalizado = normalizarTexto(filtroTipoEmpreendimento)
-        
         if (filtroTipoEmpreendimento === 'NULL') {
           return !portaria.tipo_empreendimento || portaria.tipo_empreendimento.trim() === ''
         }
@@ -369,7 +374,6 @@ export default function ConsultaPortarias() {
         const valorTipo = portaria.tipo || ''
         const valorNormalizado = normalizarTexto(valorTipo)
         const filtroNormalizado = normalizarTexto(filtroTipo)
-        
         if (filtroTipo === 'NULL') {
           return !portaria.tipo || portaria.tipo.trim() === ''
         }
@@ -377,140 +381,95 @@ export default function ConsultaPortarias() {
       })
     }
     if (filtroStatus) {
-      resultados = resultados.filter(portaria => {
-        const status = calcularStatus(portaria)
-        return status === filtroStatus
-      })
+      resultados = resultados.filter(portaria => calcularStatus(portaria) === filtroStatus)
     }
 
     return resultados
   }, [filtroAno, filtroUnidade, filtroTipoEmpreendimento, filtroTipo, filtroStatus])
 
-  // Função para obter dados base para os filtros (considerando busca atual)
-  const obterDadosBaseParaFiltros = useCallback(() => {
-    // Primeiro aplica a busca nos dados completos
-    const dadosComBusca = aplicarBusca(todosRegistros, buscaAplicada)
-    return dadosComBusca
-  }, [aplicarBusca, buscaAplicada, todosRegistros])
-
-  // Efeito: Aplicar busca e filtros e atualizar dados filtrados
+  // Atualiza filtrados quando base/filtros mudam
   useEffect(() => {
-    // 1. Primeiro aplica a busca nos dados completos
-    const dadosComBusca = aplicarBusca(todosRegistros, buscaAplicada)
-    
-    // 2. Depois aplica os filtros nos dados já com busca
-    const resultados = obterDadosFiltrados(dadosComBusca)
-    
+    const base = obterDadosBaseParaFiltros()
+    const resultados = obterDadosFiltrados(base)
     setDadosFiltrados(resultados)
     setPaginaAtual(1)
     setTotalPaginas(Math.ceil(resultados.length / itensPorPagina))
-  }, [buscaAplicada, filtroAno, filtroUnidade, filtroTipoEmpreendimento, filtroTipo, filtroStatus, todosRegistros, itensPorPagina, aplicarBusca, obterDadosFiltrados])
+  }, [resultadosBuscaServidor, todosRegistros, obterDadosBaseParaFiltros, obterDadosFiltrados, itensPorPagina])
 
-  // Efeito: Atualizar paginação quando dadosFiltrados ou página atual mudam
+  // Paginação de exibição
   useEffect(() => {
     const inicio = (paginaAtual - 1) * itensPorPagina
     const fim = inicio + itensPorPagina
     setDadosExibicao(dadosFiltrados.slice(inicio, fim))
   }, [dadosFiltrados, paginaAtual, itensPorPagina])
 
-  // FUNÇÃO: Executar busca quando o botão for clicado
+  // Ações de busca
   const executarBusca = () => {
     setBuscaAplicada(termoBuscaInput)
     setPaginaAtual(1)
   }
-
-  // FUNÇÃO: Limpar busca
   const limparBusca = () => {
     setTermoBuscaInput('')
     setBuscaAplicada('')
+    setResultadosBuscaServidor(null)
     setPaginaAtual(1)
   }
-
-  // Função para capturar Enter no input de busca
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      executarBusca()
-    }
+    if (e.key === 'Enter') executarBusca()
   }
 
-  // Funções para atualizar filtros com reset automático de filtros dependentes
+  // Filtros
   const atualizarFiltroAno = (ano: string) => {
     setFiltroAno(ano)
-    // Resetar outros filtros que podem ficar inconsistentes
     setFiltroUnidade('')
     setFiltroTipoEmpreendimento('')
     setFiltroTipo('')
     setFiltroStatus('')
   }
-
   const atualizarFiltroUnidade = (unidade: string) => {
     setFiltroUnidade(unidade)
-    // Resetar filtros dependentes
     setFiltroTipoEmpreendimento('')
     setFiltroTipo('')
     setFiltroStatus('')
   }
-
   const atualizarFiltroTipoEmpreendimento = (tipoEmpreendimento: string) => {
     setFiltroTipoEmpreendimento(tipoEmpreendimento)
-    // Resetar filtros dependentes
     setFiltroTipo('')
     setFiltroStatus('')
   }
-
   const atualizarFiltroTipo = (tipo: string) => {
     setFiltroTipo(tipo)
-    // Resetar filtros dependentes
-    setFiltroStatus('')
   }
-
   const atualizarFiltroStatus = (status: string) => {
     setFiltroStatus(status)
   }
 
-  // Função auxiliar para processar valores únicos sem duplicar "Não informado"
+  // Opções únicas
   const obterValoresUnicos = useCallback((dados: any[], campo: string) => {
-    const valores = dados.map(item => item[campo])
-    
-    // Processar valores: null/undefined/string vazia → "Não informado", outros valores mantidos
-    const valoresProcessados = valores.map(valor => 
-      !valor || valor.toString().trim() === '' ? 'Não informado' : valor.toString().trim()
-    )
-    
-    // Remover duplicatas mantendo a ordem
+    const valoresProcessados = dados
+      .map(item => item[campo])
+      .map(valor => !valor || valor.toString().trim() === '' ? 'Não informado' : valor.toString().trim())
     const valoresUnicos = [...new Set(valoresProcessados)]
-    
-    // Separar "Não informado" dos outros valores para ordenação
-    const naoInformado = valoresUnicos.filter(valor => valor === 'Não informado')
-    const outrosValores = valoresUnicos.filter(valor => valor !== 'Não informado').sort()
-    
-    // Retornar com "Não informado" primeiro, depois os outros valores ordenados
-    return [...naoInformado, ...outrosValores]
+    const naoInformado = valoresUnicos.filter(v => v === 'Não informado')
+    const outros = valoresUnicos.filter(v => v !== 'Não informado').sort()
+    return [...naoInformado, ...outros]
   }, [])
 
-  // Obter valores únicos para os filtros - BASEADO NOS DADOS BASE (com busca aplicada)
   const obterOpcoesFiltro = useCallback(() => {
     const dadosBase = obterDadosBaseParaFiltros()
-    
-    // Aplicar apenas os filtros (sem os próprios filtros que estamos calculando)
     const dadosParaAno = obterDadosFiltrados(dadosBase)
-    const anos = [...new Set(dadosParaAno.map(item => item.ano).filter(ano => ano != null))].sort((a, b) => b - a)
-
+    const anos = [...new Set(dadosParaAno.map((item: any) => item.ano).filter((ano: any) => ano != null))].sort((a: number, b: number) => b - a)
     const dadosParaUnidade = obterDadosFiltrados(dadosBase)
     const unidades = obterValoresUnicos(dadosParaUnidade, 'unidade')
-
     const dadosParaTipoEmpreendimento = obterDadosFiltrados(dadosBase)
     const tiposEmpreendimento = obterValoresUnicos(dadosParaTipoEmpreendimento, 'tipo_empreendimento')
-
     const dadosParaTipo = obterDadosFiltrados(dadosBase)
     const tipos = obterValoresUnicos(dadosParaTipo, 'tipo')
-    
     return { anos, unidades, tiposEmpreendimento, tipos }
   }, [obterDadosBaseParaFiltros, obterDadosFiltrados, obterValoresUnicos])
 
   const { anos, unidades, tiposEmpreendimento, tipos } = obterOpcoesFiltro()
 
-  // Obter opções de status baseadas nos dados base (com busca aplicada)
   const obterOpcoesStatus = useCallback(() => {
     const dadosBase = obterDadosBaseParaFiltros()
     const dadosParaStatus = obterDadosFiltrados(dadosBase)
@@ -520,52 +479,35 @@ export default function ConsultaPortarias() {
 
   const opcoesStatus = obterOpcoesStatus()
 
-  // FUNÇÃO: Determinar quais dados exportar
+  // Exportação
   const getDadosParaExportar = () => {
+    const base = obterDadosBaseParaFiltros()
     if (buscaAplicada && buscaAplicada.trim() !== '') {
       return {
         dados: dadosFiltrados,
         nome: `portarias_busca_${buscaAplicada.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`
       }
     }
-    
     if (filtroAno || filtroUnidade || filtroTipoEmpreendimento || filtroTipo || filtroStatus) {
       return {
         dados: dadosFiltrados,
         nome: `portarias_filtradas_${new Date().toISOString().split('T')[0]}.csv`
       }
     }
-    
     return {
-      dados: todosRegistros,
+      dados: base,
       nome: `portarias_cna_completas_${new Date().toISOString().split('T')[0]}.csv`
     }
   }
-
-  // FUNÇÃO: Exportar dados
   const handleExportarCSV = () => {
     const { dados, nome } = getDadosParaExportar()
     exportarParaCSV(dados, colunasSelecionadas, todasColunas, nome)
   }
 
-  // FUNÇÕES: Navegação de páginas
-  const irParaPagina = (pagina: number) => {
-    setPaginaAtual(pagina)
-  }
-
-  const avancarPagina = () => {
-    if (paginaAtual < totalPaginas) {
-      setPaginaAtual(paginaAtual + 1)
-    }
-  }
-
-  const voltarPagina = () => {
-    if (paginaAtual > 1) {
-      setPaginaAtual(paginaAtual - 1)
-    }
-  }
-
-  // Alternar seleção de coluna
+  // UI: paginação/colunas
+  const irParaPagina = (pagina: number) => setPaginaAtual(pagina)
+  const avancarPagina = () => { if (paginaAtual < totalPaginas) setPaginaAtual(paginaAtual + 1) }
+  const voltarPagina = () => { if (paginaAtual > 1) setPaginaAtual(paginaAtual - 1) }
   const alternarColuna = (colunaId: string) => {
     if (colunasSelecionadas.includes(colunaId)) {
       setColunasSelecionadas(colunasSelecionadas.filter(c => c !== colunaId))
@@ -573,92 +515,50 @@ export default function ConsultaPortarias() {
       setColunasSelecionadas([...colunasSelecionadas, colunaId])
     }
   }
-
-  // Função para renderizar o conteúdo da célula
   const renderizarConteudoCelula = (valor: string) => {
-    if (!valor || valor === 'N/A') {
-      return <span className="text-gray-500">N/A</span>
-    }
+    if (!valor || valor === 'N/A') return <span className="text-gray-500">N/A</span>
     return valor
   }
-
-  // Função para obter a classe CSS do status
   const obterClasseStatus = (status: string) => {
     switch (status) {
-      case 'Vigente':
-        return 'bg-green-100 text-green-800'
-      case 'Expirada':
-        return 'bg-red-100 text-red-800'
-      case 'Revogada':
-        return 'bg-orange-100 text-orange-800'
-      default:
-        return 'bg-gray-100 text-gray-800'
+      case 'Vigente': return 'bg-green-100 text-green-800'
+      case 'Expirada': return 'bg-red-100 text-red-800'
+      case 'Revogada': return 'bg-orange-100 text-orange-800'
+      default: return 'bg-gray-100 text-gray-800'
     }
   }
-
-  // FUNÇÃO: Gerar botões de paginação
   const gerarBotoesPagina = () => {
     const botoes = []
     const maxBotoes = 5
-    
     let inicio = Math.max(1, paginaAtual - Math.floor(maxBotoes / 2))
     let fim = Math.min(totalPaginas, inicio + maxBotoes - 1)
-    
-    if (fim - inicio + 1 < maxBotoes) {
-      inicio = Math.max(1, fim - maxBotoes + 1)
-    }
-    
+    if (fim - inicio + 1 < maxBotoes) inicio = Math.max(1, fim - maxBotoes + 1)
     for (let i = inicio; i <= fim; i++) {
       botoes.push(
         <button
           key={i}
           onClick={() => irParaPagina(i)}
-          className={`px-3 py-1 text-sm font-medium rounded-md ${
-            paginaAtual === i
-              ? 'bg-blue-600 text-white'
-              : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300'
-          }`}
+          className={`px-3 py-1 text-sm font-medium rounded-md ${paginaAtual === i ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300'}`}
         >
           {i}
         </button>
       )
     }
-    
     return botoes
   }
-
-  // FUNÇÃO: Obter texto do botão de exportação
-  const getTextoExportacao = () => {
-    const { dados } = getDadosParaExportar()
-    const quantidade = dados.length
-    
-    if (buscaAplicada && buscaAplicada.trim() !== '') {
-      return `Exportar resultados da busca (${quantidade} registros)`
-    } else if (filtroAno || filtroUnidade || filtroTipoEmpreendimento || filtroTipo || filtroStatus) {
-      return `Exportar resultados filtrados (${quantidade} registros)`
-    } else {
-      return `Exportar todos os dados (${quantidade} registros)`
-    }
-  }
-
-  // FUNÇÃO: Obter colunas ordenadas para exibição
   const getColunasOrdenadasParaExibicao = () => {
     const colunasOrdenadas: {id: string, nome: string}[] = [];
-    
     if (colunasSelecionadas.includes('status_portaria')) {
       colunasOrdenadas.push({ id: 'status_portaria', nome: 'Status' });
     }
-    
     todasColunas.forEach(coluna => {
       if (colunasSelecionadas.includes(coluna.id) && coluna.id !== 'status_portaria') {
         colunasOrdenadas.push(coluna);
       }
     });
-    
     return colunasOrdenadas;
   }
 
-  // Mostrar loading até que os dados estejam carregados E estejamos no client
   if (carregando || !isClient) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -674,52 +574,22 @@ export default function ConsultaPortarias() {
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        
-        {/* Cabeçalho */}
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            Consulta de Autorizações de Pesquisas Arqueológicas
-          </h1>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">Consulta de Autorizações de Pesquisas Arqueológicas</h1>
           <p className="text-gray-900">
             Dados extraídos do Banco de Portarias mantido e atualizado pelo{' '}
-            <a 
-              href="https://www.gov.br/iphan/pt-br/patrimonio-cultural/patrimonio-arqueologico/autorizacoes-de-pesquisas-arqueologicas" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-800 underline"
-              >
-              CNA/IPHAN
-            </a>
+            <a href="https://www.gov.br/iphan/pt-br/patrimonio-cultural/patrimonio-arqueologico/autorizacoes-de-pesquisas-arqueologicas" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800 underline">CNA/IPHAN</a>
             {' '} - {' '}
-            <a 
-              href="https://docs.google.com/spreadsheets/d/1R5svYhxvBHNOW35NEy23oE8VXX1eWq5v/edit?gid=246705190#gid=246705190" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-800 underline"
-              >
-              Ver repositório de dados
-            </a>
+            <a href="https://docs.google.com/spreadsheets/d/1R5svYhxvBHNOW35NEy23oE8VXX1eWq5v/edit?gid=246705190#gid=246705190" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800 underline">Ver repositório de dados</a>
           </p>
-          <p className="text-gray-800">
-            Informações consultáveis até a Portaria nº 104/2025 - Publicada no DOU em 12/11/2025
-          </p>
+          <p className="text-gray-800">Informações consultáveis até a Portaria nº 104/2025 - Publicada no DOU em 12/11/2025</p>
           <p className="text-gray-800">
             Para consultar dados de portarias pós 12/11/2025 - {' '}
-              <a 
-              href="https://consulta-portarias.vercel.app/" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-800 underline"
-              >
-              Ver extração DOU
-            </a>
+            <a href="https://consulta-portarias.vercel.app/" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800 underline">Ver extração DOU</a>
           </p>
-          <p className="text-gray-600">
-            Busque e filtre as informações de acordo com suas necessidades
-          </p>
+          <p className="text-gray-600">Busque e filtre as informações de acordo com suas necessidades</p>
         </div>
 
-        {/* Barra de Busca e Seleção de Colunas */}
         <div className="bg-white rounded-lg shadow p-6 mb-6">
           <div className="flex flex-col md:flex-row gap-4">
             <div className="flex-1">
@@ -754,18 +624,15 @@ export default function ConsultaPortarias() {
                 A base de dados consultada possui {totalRegistros.toLocaleString()} registros
                 {buscaAplicada && (
                   <span className="font-semibold">
-                    {' '}- Buscando por: "{buscaAplicada}"
+                    {' '}- Buscando por: "{buscaAplicada}" {carregandoBusca ? ' (carregando...)' : ''}
                   </span>
                 )}
               </p>
             </div>
           </div>
 
-          {/* Seleção de Colunas */}
           <div className="mt-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-3">
-              Selecione as colunas para visualização dos dados:
-            </h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">Selecione as colunas para visualização dos dados:</h3>
             <div className="flex flex-wrap gap-3">
               {todasColunas.map((coluna) => (
                 <label key={coluna.id} className="flex items-center space-x-2 bg-gray-100 px-3 py-2 rounded-lg">
@@ -790,13 +657,9 @@ export default function ConsultaPortarias() {
             </div>
           </div>
 
-          {/* Filtros */}
           <div className="mt-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-3">
-              Refine o resultado da busca por filtragem:
-            </h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">Refine o resultado da busca por filtragem:</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-              {/* Filtro Ano */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Ano</label>
                 <select
@@ -811,7 +674,6 @@ export default function ConsultaPortarias() {
                 </select>
               </div>
 
-              {/* Filtro Unidade */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Unidade</label>
                 <select
@@ -828,7 +690,6 @@ export default function ConsultaPortarias() {
                 </select>
               </div>
 
-              {/* Filtro Tipo de Empreendimento */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Empreendimento</label>
                 <select
@@ -845,7 +706,6 @@ export default function ConsultaPortarias() {
                 </select>
               </div>
 
-              {/* Filtro Tipo */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
                 <select
@@ -862,7 +722,6 @@ export default function ConsultaPortarias() {
                 </select>
               </div>
 
-              {/* Filtro Status */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
                 <select
@@ -880,20 +739,14 @@ export default function ConsultaPortarias() {
           </div>
         </div>
 
-        {/* Tabela de Resultados - SEM BARRA DE ROLAGEM SUPERIOR */}
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <div className="overflow-x-auto">
-            {/* CORPO DA TABELA COM ROLAGEM ÚNICA */}
             <div 
               ref={bodyRef}
               className="overflow-x-auto"
-              style={{ 
-                maxHeight: 'calc(100vh - 400px)',
-                overflow: 'auto'
-              }}
+              style={{ maxHeight: 'calc(100vh - 400px)', overflow: 'auto' }}
             >
               <table className="min-w-full divide-y divide-gray-200">
-                {/* CABEÇALHO FIXO - SEM BARRA DE ROLAGEM SEPARADA */}
                 <thead className="bg-gray-50 sticky top-0 z-10">
                   <tr>
                     {getColunasOrdenadasParaExibicao().map(coluna => (
@@ -907,8 +760,6 @@ export default function ConsultaPortarias() {
                     ))}
                   </tr>
                 </thead>
-                
-                {/* CORPO DA TABELA */}
                 <tbody className="bg-white divide-y divide-gray-200">
                   {dadosExibicao.map((portaria, index) => (
                     <tr key={index} className="hover:bg-gray-50">
@@ -919,9 +770,7 @@ export default function ConsultaPortarias() {
                           style={{ minWidth: '150px' }}
                         >
                           {coluna.id === 'status_portaria' ? (
-                            <span
-                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${obterClasseStatus(calcularStatus(portaria))}`}
-                            >
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${obterClasseStatus(calcularStatus(portaria))}`}>
                               {calcularStatus(portaria)}
                             </span>
                           ) : (
@@ -936,18 +785,14 @@ export default function ConsultaPortarias() {
             </div>
           </div>
 
-          {/* Controles de Paginação */}
           <div className="bg-gray-50 px-6 py-4 border-t border-gray-200">
             <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-              
-              {/* Informações de paginação */}
               <div className="text-sm text-gray-700">
                 <div className="flex items-center gap-4">
                   <span>
-                    Página {paginaAtual} de {totalPaginas} 
-                    {' '}({dadosExibicao.length} de {dadosFiltrados.length} registros)
+                    Página {paginaAtual} de {totalPaginas} {' '}
+                    ({dadosExibicao.length} de {dadosFiltrados.length} registros)
                   </span>
-                  
                   {totalPaginas > 1 && (
                     <div className="flex items-center gap-2">
                       <button
@@ -957,11 +802,7 @@ export default function ConsultaPortarias() {
                       >
                         Anterior
                       </button>
-                      
-                      <div className="flex gap-1">
-                        {gerarBotoesPagina()}
-                      </div>
-                      
+                      <div className="flex gap-1">{gerarBotoesPagina()}</div>
                       <button
                         onClick={avancarPagina}
                         disabled={paginaAtual === totalPaginas}
@@ -974,9 +815,8 @@ export default function ConsultaPortarias() {
                 </div>
               </div>
 
-              {/* Botões de Ação */}
               <div className="flex gap-3">
-                {(todosRegistros.length > 0) && (
+                {(obterDadosBaseParaFiltros().length > 0) && (
                   <button
                     onClick={handleExportarCSV}
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm flex items-center gap-2"
@@ -984,7 +824,17 @@ export default function ConsultaPortarias() {
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
-                    {getTextoExportacao()}
+                    {(() => {
+                      const { dados } = getDadosParaExportar()
+                      const quantidade = dados.length
+                      if (buscaAplicada && buscaAplicada.trim() !== '') {
+                        return `Exportar resultados da busca (${quantidade} registros)`
+                      } else if (filtroAno || filtroUnidade || filtroTipoEmpreendimento || filtroTipo || filtroStatus) {
+                        return `Exportar resultados filtrados (${quantidade} registros)`
+                      } else {
+                        return `Exportar todos os dados (${quantidade} registros)`
+                      }
+                    })()}
                   </button>
                 )}
               </div>
@@ -992,14 +842,9 @@ export default function ConsultaPortarias() {
           </div>
         </div>
 
-        {/* Rodapé */}
         <div className="mt-8 text-center text-gray-500 text-sm">
-          <p>            
-            Total de registros: {totalRegistros.toLocaleString()}            
-          </p>
-          <p>            
-            Dados de 1991 até 12/11/2025           
-          </p>
+          <p>Total de registros: {totalRegistros.toLocaleString()}</p>
+          <p>Dados de 1991 até 12/11/2025</p>
         </div>
       </div>
     </div>
