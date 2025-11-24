@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 // Configuração do Supabase
@@ -38,7 +38,7 @@ const todasColunas = [
   { id: 'validade', nome: 'Data de Expiração' },  
 ]
 
-// Colunas para visualização padrão na home
+// COLUNAS HOME - DEFINIDA ANTES DO COMPONENTE
 const colunasHome = [
   'ano',
   'portaria',
@@ -85,7 +85,7 @@ const normalizarTexto = (texto: string): string => {
     .trim()
 }
 
-// Função para calcular status (DEFINIDA FORA DO COMPONENTE)
+// Função para calcular status
 const calcularStatus = (portaria: any) => {
   // Verificar se é Revogada
   if (portaria.tipo && normalizarTexto(portaria.tipo).includes('revogacao')) {
@@ -199,59 +199,33 @@ const buscarTodosDados = async (): Promise<any[]> => {
   }
 }
 
-// Hook personalizado para debounce
-const useDebounce = (value: string, delay: number) => {
-  const [debouncedValue, setDebouncedValue] = useState(value)
-
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedValue(value)
-    }, delay)
-
-    return () => {
-      clearTimeout(handler)
-    }
-  }, [value, delay])
-
-  return debouncedValue
-}
-
 export default function ConsultaPortarias() {
   const [portarias, setPortarias] = useState<any[]>([])
   const [todosRegistros, setTodosRegistros] = useState<any[]>([])
   const [dadosFiltrados, setDadosFiltrados] = useState<any[]>([])
   const [dadosExibicao, setDadosExibicao] = useState<any[]>([])
-  const [buscaInput, setBuscaInput] = useState('') // Estado para o input em tempo real
-  const [busca, setBusca] = useState('') // Estado para a busca efetiva (com debounce)
-  const [colunasSelecionadas, setColunasSelecionadas] = useState(colunasHome)
+  const [termoBuscaInput, setTermoBuscaInput] = useState('')
+  const [buscaAplicada, setBuscaAplicada] = useState('')
+  const [colunasSelecionadas, setColunasSelecionadas] = useState(colunasHome) // AGORA colunasHome ESTÁ DEFINIDA
   const [carregando, setCarregando] = useState(true)
   const [dataAtualizacao, setDataAtualizacao] = useState<string>('')
   
-  // Estados: Paginação - 50 REGISTROS POR PÁGINA
   const [paginaAtual, setPaginaAtual] = useState(1)
-  const [itensPorPagina] = useState(50)
+  const [itensPorPagina] = useState(100)
   const [totalPaginas, setTotalPaginas] = useState(1)
   const [totalRegistros, setTotalRegistros] = useState(0)
 
-  // Estados: Filtros
   const [filtroAno, setFiltroAno] = useState<string>('')
   const [filtroUnidade, setFiltroUnidade] = useState<string>('')
   const [filtroTipoEmpreendimento, setFiltroTipoEmpreendimento] = useState<string>('')
   const [filtroTipo, setFiltroTipo] = useState<string>('')
   const [filtroStatus, setFiltroStatus] = useState<string>('')
 
-  // Estados para controle de hidratação
   const [isClient, setIsClient] = useState(false)
 
-  // Aplicar debounce na busca - 300ms de delay
-  const buscaDebounced = useDebounce(buscaInput, 300)
+  const bodyRef = useRef<HTMLDivElement>(null)
 
-  // Efeito para sincronizar buscaInput com busca (após debounce)
-  useEffect(() => {
-    setBusca(buscaDebounced)
-  }, [buscaDebounced])
-
-  // Efeito para marcar que estamos no client (resolve erro de hidratação)
+  // Efeito para marcar que estamos no client
   useEffect(() => {
     setIsClient(true)
   }, [])
@@ -297,7 +271,7 @@ export default function ConsultaPortarias() {
     buscarDados()
   }, [])
 
-  // Efeito para exibição automática inicial - 50 registros mais recentes
+  // Efeito para exibição automática inicial - 100 registros mais recentes
   useEffect(() => {
     if (portarias.length === 0) return
 
@@ -308,7 +282,7 @@ export default function ConsultaPortarias() {
         }
         return (b.portaria || '').localeCompare(a.portaria || '')
       })
-      .slice(0, 50)
+      .slice(0, 100)
 
     setDadosFiltrados(registrosRecentes)
     setDadosExibicao(registrosRecentes)
@@ -322,7 +296,6 @@ export default function ConsultaPortarias() {
 
     const termoNormalizado = normalizarTexto(termoBusca)
     
-    // Otimização: criar um índice de busca para melhor performance
     return dados.filter(portaria => {
       // Verificar primeiro nos campos mais comuns de busca para melhor performance
       const camposPrioritarios = [
@@ -416,14 +389,14 @@ export default function ConsultaPortarias() {
   // Função para obter dados base para os filtros (considerando busca atual)
   const obterDadosBaseParaFiltros = useCallback(() => {
     // Primeiro aplica a busca nos dados completos
-    const dadosComBusca = aplicarBusca(todosRegistros, busca)
+    const dadosComBusca = aplicarBusca(todosRegistros, buscaAplicada)
     return dadosComBusca
-  }, [aplicarBusca, busca, todosRegistros])
+  }, [aplicarBusca, buscaAplicada, todosRegistros])
 
   // Efeito: Aplicar busca e filtros e atualizar dados filtrados
   useEffect(() => {
     // 1. Primeiro aplica a busca nos dados completos
-    const dadosComBusca = aplicarBusca(todosRegistros, busca)
+    const dadosComBusca = aplicarBusca(todosRegistros, buscaAplicada)
     
     // 2. Depois aplica os filtros nos dados já com busca
     const resultados = obterDadosFiltrados(dadosComBusca)
@@ -431,7 +404,7 @@ export default function ConsultaPortarias() {
     setDadosFiltrados(resultados)
     setPaginaAtual(1)
     setTotalPaginas(Math.ceil(resultados.length / itensPorPagina))
-  }, [busca, filtroAno, filtroUnidade, filtroTipoEmpreendimento, filtroTipo, filtroStatus, todosRegistros, itensPorPagina, aplicarBusca, obterDadosFiltrados])
+  }, [buscaAplicada, filtroAno, filtroUnidade, filtroTipoEmpreendimento, filtroTipo, filtroStatus, todosRegistros, itensPorPagina, aplicarBusca, obterDadosFiltrados])
 
   // Efeito: Atualizar paginação quando dadosFiltrados ou página atual mudam
   useEffect(() => {
@@ -440,10 +413,24 @@ export default function ConsultaPortarias() {
     setDadosExibicao(dadosFiltrados.slice(inicio, fim))
   }, [dadosFiltrados, paginaAtual, itensPorPagina])
 
-  // Busca dinâmica - agora com input separado para melhor responsividade
-  const handleBuscaInput = (termo: string) => {
-    setBuscaInput(termo)
-    // A busca efetiva será aplicada após o debounce através do useEffect
+  // FUNÇÃO: Executar busca quando o botão for clicado
+  const executarBusca = () => {
+    setBuscaAplicada(termoBuscaInput)
+    setPaginaAtual(1)
+  }
+
+  // FUNÇÃO: Limpar busca
+  const limparBusca = () => {
+    setTermoBuscaInput('')
+    setBuscaAplicada('')
+    setPaginaAtual(1)
+  }
+
+  // Função para capturar Enter no input de busca
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      executarBusca()
+    }
   }
 
   // Funções para atualizar filtros com reset automático de filtros dependentes
@@ -535,10 +522,10 @@ export default function ConsultaPortarias() {
 
   // FUNÇÃO: Determinar quais dados exportar
   const getDadosParaExportar = () => {
-    if (busca && busca.trim() !== '') {
+    if (buscaAplicada && buscaAplicada.trim() !== '') {
       return {
         dados: dadosFiltrados,
-        nome: `portarias_busca_${busca.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`
+        nome: `portarias_busca_${buscaAplicada.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`
       }
     }
     
@@ -645,7 +632,7 @@ export default function ConsultaPortarias() {
     const { dados } = getDadosParaExportar()
     const quantidade = dados.length
     
-    if (busca && busca.trim() !== '') {
+    if (buscaAplicada && buscaAplicada.trim() !== '') {
       return `Exportar resultados da busca (${quantidade} registros)`
     } else if (filtroAno || filtroUnidade || filtroTipoEmpreendimento || filtroTipo || filtroStatus) {
       return `Exportar resultados filtrados (${quantidade} registros)`
@@ -736,15 +723,40 @@ export default function ConsultaPortarias() {
         <div className="bg-white rounded-lg shadow p-6 mb-6">
           <div className="flex flex-col md:flex-row gap-4">
             <div className="flex-1">
-              <input
-                type="text"
-                placeholder="🔍 Buscar por nome de arqueólogos, projetos, empreendimentos, processos, estados..."
-                value={buscaInput}
-                onChange={(e) => handleBuscaInput(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-              />
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="🔍 Buscar por nome de arqueólogos, projetos, empreendimentos, processos, estados..."
+                  value={termoBuscaInput}
+                  onChange={(e) => setTermoBuscaInput(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                />
+                <button
+                  onClick={executarBusca}
+                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  Buscar
+                </button>
+                {(termoBuscaInput || buscaAplicada) && (
+                  <button
+                    onClick={limparBusca}
+                    className="px-4 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+                  >
+                    Limpar
+                  </button>
+                )}
+              </div>
               <p className="text-sm text-gray-500 mt-1">
-                 A base de dados consultada é extensa, contendo {totalRegistros.toLocaleString()} registros, o que pode causar um pequeno delay tanto ao digitar neste campo quanto no resultado da busca
+                A base de dados consultada possui {totalRegistros.toLocaleString()} registros
+                {buscaAplicada && (
+                  <span className="font-semibold">
+                    {' '}- Buscando por: "{buscaAplicada}"
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -868,39 +880,60 @@ export default function ConsultaPortarias() {
           </div>
         </div>
 
-        {/* Tabela de Resultados */}
+        {/* Tabela de Resultados - SEM BARRA DE ROLAGEM SUPERIOR */}
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  {getColunasOrdenadasParaExibicao().map(coluna => (
-                    <th key={coluna.id} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      {coluna.nome}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {dadosExibicao.map((portaria, index) => (
-                  <tr key={index} className="hover:bg-gray-50">
+            {/* CORPO DA TABELA COM ROLAGEM ÚNICA */}
+            <div 
+              ref={bodyRef}
+              className="overflow-x-auto"
+              style={{ 
+                maxHeight: 'calc(100vh - 400px)',
+                overflow: 'auto'
+              }}
+            >
+              <table className="min-w-full divide-y divide-gray-200">
+                {/* CABEÇALHO FIXO - SEM BARRA DE ROLAGEM SEPARADA */}
+                <thead className="bg-gray-50 sticky top-0 z-10">
+                  <tr>
                     {getColunasOrdenadasParaExibicao().map(coluna => (
-                      <td key={coluna.id} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {coluna.id === 'status_portaria' ? (
-                          <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${obterClasseStatus(calcularStatus(portaria))}`}
-                          >
-                            {calcularStatus(portaria)}
-                          </span>
-                        ) : (
-                          renderizarConteudoCelula(portaria[coluna.id] || 'N/A')
-                        )}
-                      </td>
+                      <th 
+                        key={coluna.id} 
+                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap bg-gray-50"
+                        style={{ minWidth: '150px' }}
+                      >
+                        {coluna.nome}
+                      </th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                
+                {/* CORPO DA TABELA */}
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {dadosExibicao.map((portaria, index) => (
+                    <tr key={index} className="hover:bg-gray-50">
+                      {getColunasOrdenadasParaExibicao().map(coluna => (
+                        <td 
+                          key={coluna.id} 
+                          className="px-6 py-4 whitespace-nowrap text-sm text-gray-900"
+                          style={{ minWidth: '150px' }}
+                        >
+                          {coluna.id === 'status_portaria' ? (
+                            <span
+                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${obterClasseStatus(calcularStatus(portaria))}`}
+                            >
+                              {calcularStatus(portaria)}
+                            </span>
+                          ) : (
+                            renderizarConteudoCelula(portaria[coluna.id] || 'N/A')
+                          )}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           {/* Controles de Paginação */}
