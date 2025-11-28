@@ -53,27 +53,6 @@ const colunasHome = [
   'status_portaria'
 ]
 
-// Colunas para busca
-const colunasBusca = [
-  'ano',
-  'portaria',
-  'processo',
-  'unidade',
-  'projeto',
-  'empreendedor',
-  'empreendimento',
-  'tipo_empreendimento',
-  'natureza',
-  'coordenador_geral',
-  'coordenador_campo',
-  'apoios_institucionais',
-  'municipios',
-  'estados',
-  'outorga',
-  'validade',
-  'tipo'
-]
-
 // Função para remover acentos e caracteres especiais
 const normalizarTexto = (texto: string): string => {
   if (!texto) return ''
@@ -185,34 +164,38 @@ const buscarTodosDados = async (): Promise<any[]> => {
   }
 }
 
-// Busca no servidor por termo, cobrindo todas as colunas relevantes, com paginação estável
+// Busca no servidor usando as funções RPC que aplicam unaccent
 const buscarPorTermoNoServidor = async (termo: string): Promise<any[]> => {
   const chunkSize = 1000
   let start = 0
   let todos: any[] = []
   let total: number | null = null
 
-  const pattern = `%${termo}%`
-  // Monta expressão OR com ILIKE para todas as colunas de colunasBusca
-  const orExpr = colunasBusca
-    .map((col) => `${col}.ilike.${pattern}`)
-    .join(',')
-
   try {
-    while (true) {
-      const { data, count, error } = await supabase
-        .from('banco_portarias_cna')
-        .select('*', { count: 'exact' })
-        .or(orExpr)
-        .order(PRIMARY_KEY, { ascending: true })
-        .range(start, start + chunkSize - 1)
+    // Primeiro, obter a contagem total
+    const { data: countData, error: countError } = await supabase
+      .rpc('search_portarias_count', { term: termo })
+
+    if (countError) {
+      console.error('Erro ao buscar contagem:', countError)
+      return []
+    }
+
+    total = countData
+
+    // Buscar dados paginados
+    while (total === null || start < total) {
+      const { data, error } = await supabase
+        .rpc('search_portarias', {
+          term: termo,
+          limit_rows: chunkSize,
+          offset_rows: start
+        })
 
       if (error) {
         console.error('Erro ao buscar por termo:', error)
         break
       }
-
-      if (total == null) total = count ?? null
 
       if (!data || data.length === 0) break
 
@@ -621,7 +604,7 @@ export default function ConsultaPortarias() {
                 )}
               </div>
               <p className="text-sm text-gray-500 mt-1">
-                A base de dados consultada possui {totalRegistros.toLocaleString()} registros
+                A base de dados consultada possui <span className="font-semibold">{totalRegistros.toLocaleString()}</span> registros
                 {buscaAplicada && (
                   <span className="font-semibold">
                     {' '}- Buscando por: "{buscaAplicada}" {carregandoBusca ? ' (carregando...)' : ''}
